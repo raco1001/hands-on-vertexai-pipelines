@@ -1,0 +1,100 @@
+name: 03-ci-cd
+
+# main 에 머지되면 실행.
+#   1) 03-ci-cd/ 하위의 각 컴포넌트 폴더를 돌면서 이미지를 빌드 → GCR 에 푸시
+#   2) 커밋 해시를 IMAGE_TAG 로 박아서 파이프라인 YAML 컴파일
+#   3) Vertex AI Pipelines 에 제출
+#
+# 사전 설정이 필요한 repository secrets / variables:
+#   Variables:
+#     GCP_PROJECT           — GCP 프로젝트 ID
+#     GCP_REGION            — 예) us-central1
+#     PIPELINE_ROOT         — 예) gs://<bucket>/pipeline-root
+#     WIF_PROVIDER          — projects/<num>/locations/global/workloadIdentityPools/<pool>/providers/<provider>
+#     WIF_SERVICE_ACCOUNT   — 파이프라인 제출 + GCR 푸시 권한이 있는 SA 이메일
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "03-ci-cd/**"
+      - ".github/workflows/03-ci-cd.yml"
+      - "submit.py"
+      - "pyproject.toml"
+      - "uv.lock"
+  workflow_dispatch: {}
+
+env:
+  PIPELINE_DIR: 03-ci-cd
+  IMAGE_REGISTRY: gcr.io/${{ vars.GCP_PROJECT }}
+
+jobs:
+  build-and-submit:
+    runs-on: ubuntu-latest
+    # Workload Identity Federation 에 id-token 권한이 필요하다.
+    permissions:
+      contents: read
+      id-token: write
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Resolve image tag (short SHA)
+        id: tag
+        run: echo "value=${GITHUB_SHA::7}" >> "$GITHUB_OUTPUT"
+
+      - name: Authenticate to Google Cloud (WIF)
+        uses: google-github-actions/auth@v2
+        with:
+          workload_identity_provider: ${{ vars.WIF_PROVIDER }}
+          service_account: ${{ vars.WIF_SERVICE_ACCOUNT }}
+
+      - name: Set up gcloud
+        uses: google-github-actions/setup-gcloud@v2
+
+      - name: Configure Docker for GCR
+        run: gcloud auth configure-docker gcr.io --quiet
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build & push each component image
+        env:
+          IMAGE_TAG: ${{ steps.tag.outputs.value }}
+        run: |
+          set -euo pipefail
+          for dockerfile in ${PIPELINE_DIR}/*/Dockerfile; do
+            dir=$(dirname "$dockerfile")
+            name=$(basename "$dir")
+            image="${IMAGE_REGISTRY}/${name}"
+            echo "::group::${image}:${IMAGE_TAG}"
+            docker buildx build \
+              --push \
+              --tag "${image}:${IMAGE_TAG}" \
+              --tag "${image}:latest" \
+              "$dir"
+            echo "::endgroup::"
+          done
+
+      - name: Set up uv
+        uses: astral-sh/setup-uv@v4
+        with:
+          enable-cache: true
+
+      - name: Install python dependencies
+        run: uv sync --frozen
+
+      - name: Compile pipeline
+        env:
+          IMAGE_TAG: ${{ steps.tag.outputs.value }}
+        run: uv run python ${PIPELINE_DIR}/pipeline.py
+
+      - name: Submit pipeline to Vertex AI
+        run: |
+          uv run python submit.py \
+            --project "${{ vars.GCP_PROJECT }}" \
+            --region "${{ vars.GCP_REGION }}" \
+            --pipeline-root "${{ vars.PIPELINE_ROOT }}" \
+            --template "${PIPELINE_DIR}/ci-cd-pipeline.yaml" \
+            --display-name "ci-cd-cifar10-${{ steps.tag.outputs.value }}" \
+            --enable-caching

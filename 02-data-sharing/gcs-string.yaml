@@ -1,0 +1,146 @@
+# PIPELINE DEFINITION
+# Name: data-sharing-gcs-string
+# Description: GCS URI 문자열로 데이터를 주고받는 예제
+# Inputs:
+#    blob_name: str [Default: '02-data-sharing/gcs-string/sample.csv']
+#    bucket: str
+components:
+  comp-consume-from-gcs:
+    executorLabel: exec-consume-from-gcs
+    inputDefinitions:
+      parameters:
+        gcs_uri:
+          parameterType: STRING
+    outputDefinitions:
+      parameters:
+        Output:
+          parameterType: NUMBER_INTEGER
+  comp-produce-to-gcs:
+    executorLabel: exec-produce-to-gcs
+    inputDefinitions:
+      parameters:
+        blob_name:
+          parameterType: STRING
+        bucket:
+          parameterType: STRING
+    outputDefinitions:
+      parameters:
+        Output:
+          parameterType: STRING
+deploymentSpec:
+  executors:
+    exec-consume-from-gcs:
+      container:
+        args:
+        - --executor_input
+        - '{{$}}'
+        - --function_to_execute
+        - consume_from_gcs
+        command:
+        - sh
+        - -c
+        - "\nif ! [ -x \"$(command -v pip)\" ]; then\n    python3 -m ensurepip ||\
+          \ python3 -m ensurepip --user || apt-get install python3-pip\nfi\n\nPIP_DISABLE_PIP_VERSION_CHECK=1\
+          \ python3 -m pip install --quiet --no-warn-script-location 'google-cloud-storage==2.18.2'\
+          \  &&  python3 -m pip install --quiet --no-warn-script-location 'kfp==2.16.0'\
+          \ '--no-deps' 'typing-extensions>=3.7.4,<5; python_version<\"3.9\"' && \"\
+          $0\" \"$@\"\n"
+        - sh
+        - -ec
+        - 'program_path=$(mktemp -d)
+
+
+          printf "%s" "$0" > "$program_path/ephemeral_component.py"
+
+          _KFP_RUNTIME=true python3 -m kfp.dsl.executor_main                         --component_module_path                         "$program_path/ephemeral_component.py"                         "$@"
+
+          '
+        - "\nimport kfp\nfrom kfp import dsl\nfrom kfp.dsl import *\nfrom typing import\
+          \ *\n\ndef consume_from_gcs(gcs_uri: str) -> int:\n    from google.cloud\
+          \ import storage\n\n    assert gcs_uri.startswith(\"gs://\"), f\"invalid\
+          \ uri: {gcs_uri}\"\n    bucket_name, _, blob_name = gcs_uri.removeprefix(\"\
+          gs://\").partition(\"/\")\n\n    client = storage.Client()\n    content\
+          \ = client.bucket(bucket_name).blob(blob_name).download_as_text()\n\n  \
+          \  lines = [line for line in content.splitlines() if line]\n    num_rows\
+          \ = max(len(lines) - 1, 0)  # \uD5E4\uB354 \uC81C\uC678\n    print(f\"[consume]\
+          \ read {num_rows} rows from {gcs_uri}\")\n    return num_rows\n\n"
+        image: python:3.12-slim
+    exec-produce-to-gcs:
+      container:
+        args:
+        - --executor_input
+        - '{{$}}'
+        - --function_to_execute
+        - produce_to_gcs
+        command:
+        - sh
+        - -c
+        - "\nif ! [ -x \"$(command -v pip)\" ]; then\n    python3 -m ensurepip ||\
+          \ python3 -m ensurepip --user || apt-get install python3-pip\nfi\n\nPIP_DISABLE_PIP_VERSION_CHECK=1\
+          \ python3 -m pip install --quiet --no-warn-script-location 'google-cloud-storage==2.18.2'\
+          \  &&  python3 -m pip install --quiet --no-warn-script-location 'kfp==2.16.0'\
+          \ '--no-deps' 'typing-extensions>=3.7.4,<5; python_version<\"3.9\"' && \"\
+          $0\" \"$@\"\n"
+        - sh
+        - -ec
+        - 'program_path=$(mktemp -d)
+
+
+          printf "%s" "$0" > "$program_path/ephemeral_component.py"
+
+          _KFP_RUNTIME=true python3 -m kfp.dsl.executor_main                         --component_module_path                         "$program_path/ephemeral_component.py"                         "$@"
+
+          '
+        - "\nimport kfp\nfrom kfp import dsl\nfrom kfp.dsl import *\nfrom typing import\
+          \ *\n\ndef produce_to_gcs(bucket: str, blob_name: str) -> str:\n    from\
+          \ google.cloud import storage\n\n    csv_text = \"id,value\\n1,10\\n2,20\\\
+          n3,30\\n\"\n\n    client = storage.Client()\n    blob = client.bucket(bucket).blob(blob_name)\n\
+          \    blob.upload_from_string(csv_text, content_type=\"text/csv\")\n\n  \
+          \  uri = f\"gs://{bucket}/{blob_name}\"\n    print(f\"[produce] uploaded\
+          \ to {uri}\")\n    return uri\n\n"
+        image: python:3.12-slim
+pipelineInfo:
+  description: "GCS URI \uBB38\uC790\uC5F4\uB85C \uB370\uC774\uD130\uB97C \uC8FC\uACE0\
+    \uBC1B\uB294 \uC608\uC81C"
+  name: data-sharing-gcs-string
+root:
+  dag:
+    tasks:
+      consume-from-gcs:
+        cachingOptions:
+          enableCache: true
+        componentRef:
+          name: comp-consume-from-gcs
+        dependentTasks:
+        - produce-to-gcs
+        inputs:
+          parameters:
+            gcs_uri:
+              taskOutputParameter:
+                outputParameterKey: Output
+                producerTask: produce-to-gcs
+        taskInfo:
+          name: consume-from-gcs
+      produce-to-gcs:
+        cachingOptions:
+          enableCache: true
+        componentRef:
+          name: comp-produce-to-gcs
+        inputs:
+          parameters:
+            blob_name:
+              componentInputParameter: blob_name
+            bucket:
+              componentInputParameter: bucket
+        taskInfo:
+          name: produce-to-gcs
+  inputDefinitions:
+    parameters:
+      blob_name:
+        defaultValue: 02-data-sharing/gcs-string/sample.csv
+        isOptional: true
+        parameterType: STRING
+      bucket:
+        parameterType: STRING
+schemaVersion: 2.1.0
+sdkVersion: kfp-2.16.0

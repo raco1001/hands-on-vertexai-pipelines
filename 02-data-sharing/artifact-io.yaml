@@ -1,0 +1,142 @@
+# PIPELINE DEFINITION
+# Name: data-sharing-artifact-io
+# Description: Input/Output 아티팩트로 데이터를 공유하는 예제
+# Inputs:
+#    num_rows: int [Default: 50.0]
+components:
+  comp-consume-artifact:
+    executorLabel: exec-consume-artifact
+    inputDefinitions:
+      artifacts:
+        input_dataset:
+          artifactType:
+            schemaTitle: system.Dataset
+            schemaVersion: 0.0.1
+    outputDefinitions:
+      parameters:
+        Output:
+          parameterType: NUMBER_DOUBLE
+  comp-produce-artifact:
+    executorLabel: exec-produce-artifact
+    inputDefinitions:
+      parameters:
+        num_rows:
+          parameterType: NUMBER_INTEGER
+    outputDefinitions:
+      artifacts:
+        output_dataset:
+          artifactType:
+            schemaTitle: system.Dataset
+            schemaVersion: 0.0.1
+deploymentSpec:
+  executors:
+    exec-consume-artifact:
+      container:
+        args:
+        - --executor_input
+        - '{{$}}'
+        - --function_to_execute
+        - consume_artifact
+        command:
+        - sh
+        - -c
+        - "\nif ! [ -x \"$(command -v pip)\" ]; then\n    python3 -m ensurepip ||\
+          \ python3 -m ensurepip --user || apt-get install python3-pip\nfi\n\nPIP_DISABLE_PIP_VERSION_CHECK=1\
+          \ python3 -m pip install --quiet --no-warn-script-location 'pandas==2.2.2'\
+          \  &&  python3 -m pip install --quiet --no-warn-script-location 'kfp==2.16.0'\
+          \ '--no-deps' 'typing-extensions>=3.7.4,<5; python_version<\"3.9\"' && \"\
+          $0\" \"$@\"\n"
+        - sh
+        - -ec
+        - 'program_path=$(mktemp -d)
+
+
+          printf "%s" "$0" > "$program_path/ephemeral_component.py"
+
+          _KFP_RUNTIME=true python3 -m kfp.dsl.executor_main                         --component_module_path                         "$program_path/ephemeral_component.py"                         "$@"
+
+          '
+        - "\nimport kfp\nfrom kfp import dsl\nfrom kfp.dsl import *\nfrom typing import\
+          \ *\n\ndef consume_artifact(input_dataset: Input[Dataset]) -> float:\n \
+          \   import pandas as pd\n\n    df = pd.read_csv(input_dataset.path)\n  \
+          \  mean_value = float(df[\"value\"].mean())\n\n    print(f\"[consume] read\
+          \ {len(df)} rows from {input_dataset.uri}\")\n    print(f\"[consume] metadata:\
+          \ {input_dataset.metadata}\")\n    print(f\"[consume] mean(value) = {mean_value}\"\
+          )\n    return mean_value\n\n"
+        image: python:3.12-slim
+    exec-produce-artifact:
+      container:
+        args:
+        - --executor_input
+        - '{{$}}'
+        - --function_to_execute
+        - produce_artifact
+        command:
+        - sh
+        - -c
+        - "\nif ! [ -x \"$(command -v pip)\" ]; then\n    python3 -m ensurepip ||\
+          \ python3 -m ensurepip --user || apt-get install python3-pip\nfi\n\nPIP_DISABLE_PIP_VERSION_CHECK=1\
+          \ python3 -m pip install --quiet --no-warn-script-location 'pandas==2.2.2'\
+          \  &&  python3 -m pip install --quiet --no-warn-script-location 'kfp==2.16.0'\
+          \ '--no-deps' 'typing-extensions>=3.7.4,<5; python_version<\"3.9\"' && \"\
+          $0\" \"$@\"\n"
+        - sh
+        - -ec
+        - 'program_path=$(mktemp -d)
+
+
+          printf "%s" "$0" > "$program_path/ephemeral_component.py"
+
+          _KFP_RUNTIME=true python3 -m kfp.dsl.executor_main                         --component_module_path                         "$program_path/ephemeral_component.py"                         "$@"
+
+          '
+        - "\nimport kfp\nfrom kfp import dsl\nfrom kfp.dsl import *\nfrom typing import\
+          \ *\n\ndef produce_artifact(\n    num_rows: int,\n    output_dataset: Output[Dataset],\n\
+          ) -> None:\n    import pandas as pd\n\n    df = pd.DataFrame(\n        {\"\
+          id\": range(num_rows), \"value\": [i * 10 for i in range(num_rows)]}\n \
+          \   )\n    df.to_csv(output_dataset.path, index=False)\n\n    output_dataset.metadata[\"\
+          num_rows\"] = num_rows\n    output_dataset.metadata[\"format\"] = \"csv\"\
+          \n    print(f\"[produce] wrote {num_rows} rows to {output_dataset.path}\"\
+          )\n\n"
+        image: python:3.12-slim
+pipelineInfo:
+  description: "Input/Output \uC544\uD2F0\uD329\uD2B8\uB85C \uB370\uC774\uD130\uB97C\
+    \ \uACF5\uC720\uD558\uB294 \uC608\uC81C"
+  name: data-sharing-artifact-io
+root:
+  dag:
+    tasks:
+      consume-artifact:
+        cachingOptions:
+          enableCache: true
+        componentRef:
+          name: comp-consume-artifact
+        dependentTasks:
+        - produce-artifact
+        inputs:
+          artifacts:
+            input_dataset:
+              taskOutputArtifact:
+                outputArtifactKey: output_dataset
+                producerTask: produce-artifact
+        taskInfo:
+          name: consume-artifact
+      produce-artifact:
+        cachingOptions:
+          enableCache: true
+        componentRef:
+          name: comp-produce-artifact
+        inputs:
+          parameters:
+            num_rows:
+              componentInputParameter: num_rows
+        taskInfo:
+          name: produce-artifact
+  inputDefinitions:
+    parameters:
+      num_rows:
+        defaultValue: 50.0
+        isOptional: true
+        parameterType: NUMBER_INTEGER
+schemaVersion: 2.1.0
+sdkVersion: kfp-2.16.0

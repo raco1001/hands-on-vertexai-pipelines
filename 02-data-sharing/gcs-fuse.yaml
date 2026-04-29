@@ -1,0 +1,141 @@
+# PIPELINE DEFINITION
+# Name: data-sharing-gcs-fuse
+# Description: GCS Fuse 마운트(/gcs/<bucket>/...)로 데이터를 공유하는 예제
+# Inputs:
+#    bucket: str
+#    file_name: str [Default: '02-data-sharing/gcs-fuse/sample.csv']
+components:
+  comp-consume-from-fuse:
+    executorLabel: exec-consume-from-fuse
+    inputDefinitions:
+      parameters:
+        file_path:
+          parameterType: STRING
+    outputDefinitions:
+      parameters:
+        Output:
+          parameterType: NUMBER_INTEGER
+  comp-produce-to-fuse:
+    executorLabel: exec-produce-to-fuse
+    inputDefinitions:
+      parameters:
+        bucket:
+          parameterType: STRING
+        file_name:
+          parameterType: STRING
+    outputDefinitions:
+      parameters:
+        Output:
+          parameterType: STRING
+deploymentSpec:
+  executors:
+    exec-consume-from-fuse:
+      container:
+        args:
+        - --executor_input
+        - '{{$}}'
+        - --function_to_execute
+        - consume_from_fuse
+        command:
+        - sh
+        - -c
+        - "\nif ! [ -x \"$(command -v pip)\" ]; then\n    python3 -m ensurepip ||\
+          \ python3 -m ensurepip --user || apt-get install python3-pip\nfi\n\nPIP_DISABLE_PIP_VERSION_CHECK=1\
+          \ python3 -m pip install --quiet --no-warn-script-location 'kfp==2.16.0'\
+          \ '--no-deps' 'typing-extensions>=3.7.4,<5; python_version<\"3.9\"' && \"\
+          $0\" \"$@\"\n"
+        - sh
+        - -ec
+        - 'program_path=$(mktemp -d)
+
+
+          printf "%s" "$0" > "$program_path/ephemeral_component.py"
+
+          _KFP_RUNTIME=true python3 -m kfp.dsl.executor_main                         --component_module_path                         "$program_path/ephemeral_component.py"                         "$@"
+
+          '
+        - "\nimport kfp\nfrom kfp import dsl\nfrom kfp.dsl import *\nfrom typing import\
+          \ *\n\ndef consume_from_fuse(file_path: str) -> int:\n    with open(file_path)\
+          \ as f:\n        lines = [line for line in f.read().splitlines() if line]\n\
+          \n    num_rows = max(len(lines) - 1, 0)  # \uD5E4\uB354 \uC81C\uC678\n \
+          \   print(f\"[consume] read {num_rows} rows from FUSE path: {file_path}\"\
+          )\n    return num_rows\n\n"
+        image: python:3.12-slim
+    exec-produce-to-fuse:
+      container:
+        args:
+        - --executor_input
+        - '{{$}}'
+        - --function_to_execute
+        - produce_to_fuse
+        command:
+        - sh
+        - -c
+        - "\nif ! [ -x \"$(command -v pip)\" ]; then\n    python3 -m ensurepip ||\
+          \ python3 -m ensurepip --user || apt-get install python3-pip\nfi\n\nPIP_DISABLE_PIP_VERSION_CHECK=1\
+          \ python3 -m pip install --quiet --no-warn-script-location 'kfp==2.16.0'\
+          \ '--no-deps' 'typing-extensions>=3.7.4,<5; python_version<\"3.9\"' && \"\
+          $0\" \"$@\"\n"
+        - sh
+        - -ec
+        - 'program_path=$(mktemp -d)
+
+
+          printf "%s" "$0" > "$program_path/ephemeral_component.py"
+
+          _KFP_RUNTIME=true python3 -m kfp.dsl.executor_main                         --component_module_path                         "$program_path/ephemeral_component.py"                         "$@"
+
+          '
+        - "\nimport kfp\nfrom kfp import dsl\nfrom kfp.dsl import *\nfrom typing import\
+          \ *\n\ndef produce_to_fuse(bucket: str, file_name: str) -> str:\n    import\
+          \ os\n\n    fuse_path = f\"/gcs/{bucket}/{file_name}\"\n    os.makedirs(os.path.dirname(fuse_path),\
+          \ exist_ok=True)\n\n    with open(fuse_path, \"w\") as f:\n        f.write(\"\
+          id,value\\n\")\n        for i in range(5):\n            f.write(f\"{i},{i\
+          \ * 100}\\n\")\n\n    print(f\"[produce] wrote file via FUSE: {fuse_path}\"\
+          )\n    return fuse_path\n\n"
+        image: python:3.12-slim
+pipelineInfo:
+  description: "GCS Fuse \uB9C8\uC6B4\uD2B8(/gcs/<bucket>/...)\uB85C \uB370\uC774\uD130\
+    \uB97C \uACF5\uC720\uD558\uB294 \uC608\uC81C"
+  name: data-sharing-gcs-fuse
+root:
+  dag:
+    tasks:
+      consume-from-fuse:
+        cachingOptions:
+          enableCache: true
+        componentRef:
+          name: comp-consume-from-fuse
+        dependentTasks:
+        - produce-to-fuse
+        inputs:
+          parameters:
+            file_path:
+              taskOutputParameter:
+                outputParameterKey: Output
+                producerTask: produce-to-fuse
+        taskInfo:
+          name: consume-from-fuse
+      produce-to-fuse:
+        cachingOptions:
+          enableCache: true
+        componentRef:
+          name: comp-produce-to-fuse
+        inputs:
+          parameters:
+            bucket:
+              componentInputParameter: bucket
+            file_name:
+              componentInputParameter: file_name
+        taskInfo:
+          name: produce-to-fuse
+  inputDefinitions:
+    parameters:
+      bucket:
+        parameterType: STRING
+      file_name:
+        defaultValue: 02-data-sharing/gcs-fuse/sample.csv
+        isOptional: true
+        parameterType: STRING
+schemaVersion: 2.1.0
+sdkVersion: kfp-2.16.0

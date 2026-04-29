@@ -1,22 +1,21 @@
 name: 03-ci-cd
 
-# main 에 머지되면 실행.
-#   1) 03-ci-cd/ 하위의 각 컴포넌트 폴더를 돌면서 이미지를 빌드
-#      → Artifact Registry 의 docker repo (`vertex-ci-images`) 에 푸시
-#   2) 커밋 해시를 IMAGE_TAG 로 박아서 파이프라인 YAML 컴파일
-#   3) 컴파일된 YAML 을 KFP 템플릿 레지스트리(Artifact Registry) 에 업로드
-#      → Vertex AI 콘솔의 "파이프라인 템플릿" 에서 바로 보이고, 거기서 "실행 만들기"
-#         로 본인이 원하는 시점에 실행 가능
+# main 에 머지되면 실행되며, monorepo 패턴으로 동작한다:
+#   - 각 컴포넌트 폴더의 last-touch 커밋 SHA 를 그 컴포넌트의 이미지 태그로 사용
+#   - 그 태그 이미지가 이미 Artifact Registry 에 있으면 빌드 스킵
+#   - 변경된 컴포넌트만 새 이미지를 빌드/푸시
+#   - 컴파일 시 컴포넌트별 태그를 환경변수로 주입 → 변경되지 않은 컴포넌트는
+#     이전 SHA 의 이미지를 그대로 참조
+#   - 컴파일된 YAML 을 KFP 템플릿 레지스트리에 항상 업로드 (현재 구성 스냅샷)
 #
 # 사전 설정이 필요한 repository variables:
 #     GCP_PROJECT           — GCP 프로젝트 ID
-#     GCP_REGION            — 예) us-central1 (Docker 이미지 / pipeline-root 용)
-#     PIPELINE_ROOT         — 예) gs://<bucket>/pipeline-root (콘솔에서 실행 시 사용)
-#     AR_REPO               — Docker 이미지용 AR repo 이름 (예: vertex-ci-images)
-#     KFP_HOST              — KFP 템플릿 AR repo 의 host URL
-#                             (예: https://us-kfp.pkg.dev/<project>/<kfp-repo>)
+#     GCP_REGION            — Docker / pipeline-root 용 (예: us-central1)
+#     PIPELINE_ROOT         — gs://<bucket>/pipeline-root
+#     AR_REPO               — Docker 이미지용 AR repo (예: vertex-ci-images)
+#     KFP_HOST              — KFP 템플릿 host (예: https://us-kfp.pkg.dev/<project>/<repo>)
 #     WIF_PROVIDER          — projects/<num>/locations/global/workloadIdentityPools/<pool>/providers/<provider>
-#     WIF_SERVICE_ACCOUNT   — AR 푸시 + 템플릿 업로드 권한이 있는 SA 이메일
+#     WIF_SERVICE_ACCOUNT   — AR 푸시 + 템플릿 업로드 권한 SA
 
 on:
   push:
@@ -24,30 +23,26 @@ on:
     paths:
       - "03-ci-cd/**"
       - ".github/workflows/03-ci-cd.yml"
-      - "submit.py"
       - "pyproject.toml"
       - "uv.lock"
   workflow_dispatch: {}
 
 env:
   PIPELINE_DIR: 03-ci-cd
-  # Artifact Registry 형식: <REGION>-docker.pkg.dev/<PROJECT>/<REPO>
   IMAGE_REGISTRY: ${{ vars.GCP_REGION }}-docker.pkg.dev/${{ vars.GCP_PROJECT }}/${{ vars.AR_REPO }}
 
 jobs:
   build-and-publish:
     runs-on: ubuntu-latest
-    # Workload Identity Federation 에 id-token 권한이 필요하다.
     permissions:
       contents: read
       id-token: write
 
     steps:
       - uses: actions/checkout@v4
-
-      - name: Resolve image tag (short SHA)
-        id: tag
-        run: echo "value=${GITHUB_SHA::7}" >> "$GITHUB_OUTPUT"
+        with:
+          # last-touch 커밋을 찾으려면 전체 history 가 필요하다.
+          fetch-depth: 0
 
       - name: Authenticate to Google Cloud (WIF)
         uses: google-github-actions/auth@v2
@@ -64,21 +59,53 @@ jobs:
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
 
-      - name: Build & push each component image
-        env:
-          IMAGE_TAG: ${{ steps.tag.outputs.value }}
+      - name: Resolve per-component image tags (last-touch SHA)
+        id: tags
         run: |
           set -euo pipefail
-          for dockerfile in ${PIPELINE_DIR}/*/Dockerfile; do
-            dir=$(dirname "$dockerfile")
-            name=$(basename "$dir")
-            image="${IMAGE_REGISTRY}/${name}"
-            echo "::group::${image}:${IMAGE_TAG}"
+          for comp in data-preparation train evaluation; do
+            # 해당 폴더에 영향을 준 가장 최근 커밋의 short SHA
+            sha=$(git log -1 --format=%h -- "${PIPELINE_DIR}/${comp}/")
+            if [[ -z "$sha" ]]; then
+              echo "::error::could not resolve SHA for ${comp}"
+              exit 1
+            fi
+            key=$(echo "$comp" | tr '-' '_')
+            echo "tag_${key}=${sha}" >> "$GITHUB_OUTPUT"
+            echo "${comp}: ${sha}"
+          done
+
+      - name: Build & push only changed components
+        env:
+          DATA_PREP_TAG: ${{ steps.tags.outputs.tag_data_preparation }}
+          TRAIN_TAG: ${{ steps.tags.outputs.tag_train }}
+          EVAL_TAG: ${{ steps.tags.outputs.tag_evaluation }}
+        run: |
+          set -euo pipefail
+          declare -A TAG_MAP=(
+            [data-preparation]="$DATA_PREP_TAG"
+            [train]="$TRAIN_TAG"
+            [evaluation]="$EVAL_TAG"
+          )
+          for comp in data-preparation train evaluation; do
+            tag="${TAG_MAP[$comp]}"
+            image_path="${IMAGE_REGISTRY}/${comp}"
+            full="${image_path}:${tag}"
+
+            # 같은 태그가 이미 푸시되어 있으면 빌드 생략
+            if gcloud artifacts docker tags list "${image_path}" \
+                 --filter="tag=${tag}" --format="value(tag)" \
+                 --project="${{ vars.GCP_PROJECT }}" 2>/dev/null \
+                 | grep -qx "${tag}"; then
+              echo "::notice::skip ${full} (already exists in AR)"
+              continue
+            fi
+
+            echo "::group::build ${full}"
             docker buildx build \
               --push \
-              --tag "${image}:${IMAGE_TAG}" \
-              --tag "${image}:latest" \
-              "$dir"
+              --tag "${full}" \
+              "${PIPELINE_DIR}/${comp}"
             echo "::endgroup::"
           done
 
@@ -90,14 +117,17 @@ jobs:
       - name: Install python dependencies
         run: uv sync --frozen
 
-      - name: Compile pipeline
+      - name: Compile pipeline with per-component tags
         env:
-          IMAGE_TAG: ${{ steps.tag.outputs.value }}
+          DATA_PREP_TAG: ${{ steps.tags.outputs.tag_data_preparation }}
+          TRAIN_TAG: ${{ steps.tags.outputs.tag_train }}
+          EVAL_TAG: ${{ steps.tags.outputs.tag_evaluation }}
         run: uv run python ${PIPELINE_DIR}/pipeline.py
 
       - name: Upload pipeline template to KFP registry
         env:
           KFP_HOST: ${{ vars.KFP_HOST }}
           TEMPLATE_PATH: ${{ env.PIPELINE_DIR }}/ci-cd-pipeline.yaml
-          TAGS: ${{ steps.tag.outputs.value }},latest
+          # 워크플로우 실행 SHA + latest 두 개 태그로 등록
+          TAGS: ${{ github.sha }},latest
         run: uv run python ${PIPELINE_DIR}/upload_template.py

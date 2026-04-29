@@ -8,8 +8,14 @@
 세 컴포넌트 모두 별도 Docker 이미지로 빌드된다. 이미지 태그는 컴파일 시점에
 환경변수로 주입되어, CI/CD 에서 빌드한 특정 커밋 기준 이미지를 그대로 참조한다.
 
-  - IMAGE_REGISTRY : 예) us-central1-docker.pkg.dev/<project>/vertex-ci-images
-  - IMAGE_TAG      : 예) a1b2c3d (git short SHA) / latest
+각 컴포넌트가 **독립적인 태그** 를 갖는 이유는 monorepo CI 에서 변경되지 않은
+컴포넌트는 재빌드하지 않고 기존 이미지를 그대로 재사용하기 위함이다. CI 워크플로우는
+각 폴더를 마지막으로 건드린 커밋의 short SHA 를 해당 컴포넌트의 태그로 사용한다.
+
+  - IMAGE_REGISTRY  : 예) us-central1-docker.pkg.dev/<project>/vertex-ci-images
+  - DATA_PREP_TAG   : data-preparation 이미지 태그
+  - TRAIN_TAG       : train 이미지 태그
+  - EVAL_TAG        : evaluation 이미지 태그
 """
 
 import os
@@ -24,7 +30,11 @@ IMAGE_REGISTRY = os.environ.get(
     "IMAGE_REGISTRY",
     "us-central1-docker.pkg.dev/REPLACE-WITH-PROJECT/vertex-ci-images",
 )
-IMAGE_TAG = os.environ.get("IMAGE_TAG", "latest")
+
+# 컴포넌트별 태그 — 각 컴포넌트 폴더의 last-touch 커밋 short SHA 가 들어온다.
+DATA_PREP_TAG = os.environ.get("DATA_PREP_TAG", "latest")
+TRAIN_TAG = os.environ.get("TRAIN_TAG", "latest")
+EVAL_TAG = os.environ.get("EVAL_TAG", "latest")
 
 
 # ---------------------------------------------------------------------------
@@ -37,7 +47,7 @@ def data_preparation(
     test_dataset: Output[Dataset],
 ):
     return dsl.ContainerSpec(
-        image=f"{IMAGE_REGISTRY}/data-preparation:{IMAGE_TAG}",
+        image=f"{IMAGE_REGISTRY}/data-preparation:{DATA_PREP_TAG}",
         command=["python", "main.py"],
         args=[
             "--train-output",
@@ -57,7 +67,7 @@ def train(
     lr: float,
 ):
     return dsl.ContainerSpec(
-        image=f"{IMAGE_REGISTRY}/train:{IMAGE_TAG}",
+        image=f"{IMAGE_REGISTRY}/train:{TRAIN_TAG}",
         command=["python", "main.py"],
         args=[
             "--train-input",
@@ -81,7 +91,7 @@ def evaluation(
     metrics: Output[Metrics],
 ):
     return dsl.ContainerSpec(
-        image=f"{IMAGE_REGISTRY}/evaluation:{IMAGE_TAG}",
+        image=f"{IMAGE_REGISTRY}/evaluation:{EVAL_TAG}",
         command=["python", "main.py"],
         args=[
             "--test-input",
@@ -150,4 +160,6 @@ if __name__ == "__main__":
     )
     print(f"compiled -> {output_path}")
     print(f"  IMAGE_REGISTRY = {IMAGE_REGISTRY}")
-    print(f"  IMAGE_TAG      = {IMAGE_TAG}")
+    print(f"  DATA_PREP_TAG  = {DATA_PREP_TAG}")
+    print(f"  TRAIN_TAG      = {TRAIN_TAG}")
+    print(f"  EVAL_TAG       = {EVAL_TAG}")

@@ -15,5 +15,8 @@ wheels/
 # macOS
 .DS_Store
 
-# CI 가 매번 재컴파일하는 산출물 (IMAGE_TAG 가 박혀 들어가므로 git 에 두지 않음)
-03-ci-cd/ci-cd-pipeline.yaml
+# 컴파일된 파이프라인 산출물 — 각자 로컬에서 컴파일해 사용한다.
+# (CI/CD 의 경우 IMAGE_TAG 가 매 빌드마다 새로 박히므로 commit 의미 없음)
+01-first-pipeline/*.yaml
+02-data-sharing/*.yaml
+03-ci-cd/*.yaml

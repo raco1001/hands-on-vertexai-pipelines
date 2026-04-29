@@ -1,13 +1,9 @@
-FROM python:3.12-slim
+# PyTorch 공식 CUDA 런타임 이미지. GPU 가 붙으면 CUDA 가속, GPU 가 없으면 자동으로
+# CPU 로 fallback (main.py 의 `torch.device('cuda' if torch.cuda.is_available() else 'cpu')`).
+# 이 이미지에는 torch / torchvision 이 이미 포함되어 있어 별도 pip install 불필요.
+FROM pytorch/pytorch:2.5.1-cuda12.1-cudnn9-runtime
 
 WORKDIR /app
-
-# CPU 전용 PyTorch 휠. GPU 를 사용할 예정이면 base image 를
-# `pytorch/pytorch:2.5.1-cuda12.1-cudnn9-runtime` 등으로 교체하고
-# 아래 pip install 라인을 제거하면 된다.
-RUN pip install --no-cache-dir \
-    --index-url https://download.pytorch.org/whl/cpu \
-    torch==2.5.1
 
 COPY main.py .
 

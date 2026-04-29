@@ -124,6 +124,11 @@ def ci_cd_pipeline(
     # --- train 컴퓨팅 스펙 ---
     cpu_train: str = "4",
     memory_train: str = "16G",
+    # GPU 토글: count 가 0 이면 CPU 로 실행, 1 이상이면 해당 GPU 를 붙인다.
+    # type 은 count > 0 일 때만 의미 있고, count=0 일 때는 무시된다.
+    # 사용 가능한 type 예시: NVIDIA_TESLA_T4, NVIDIA_TESLA_V100, NVIDIA_L4
+    train_accelerator_type: str = "NVIDIA_TESLA_T4",
+    train_accelerator_count: int = 0,
     # --- evaluation 컴퓨팅 스펙 ---
     cpu_eval: str = "2",
     memory_eval: str = "8G",
@@ -140,9 +145,9 @@ def ci_cd_pipeline(
         lr=lr,
     )
     train_task.set_cpu_limit(cpu_train).set_memory_limit(memory_train)
-    # GPU 를 붙이려면 아래 두 줄의 주석을 풀고 이미지도 CUDA base 로 교체한다:
-    # train_task.set_accelerator_type("NVIDIA_TESLA_T4")
-    # train_task.set_accelerator_limit(1)
+    # train_accelerator_count=0 이면 GPU 미할당. count>=1 이면 type 의 GPU 를 붙인다.
+    train_task.set_accelerator_type(train_accelerator_type)
+    train_task.set_accelerator_limit(train_accelerator_count)
 
     # 3) evaluation — prep 의 test_dataset + train 의 model 을 입력으로 받는다.
     eval_task = evaluation(

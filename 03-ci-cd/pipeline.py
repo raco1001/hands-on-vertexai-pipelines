@@ -8,7 +8,7 @@
 세 컴포넌트 모두 별도 Docker 이미지로 빌드된다. 이미지 태그는 컴파일 시점에
 환경변수로 주입되어, CI/CD 에서 빌드한 특정 커밋 기준 이미지를 그대로 참조한다.
 
-  - IMAGE_REGISTRY : 예) gcr.io/my-project
+  - IMAGE_REGISTRY : 예) us-central1-docker.pkg.dev/<project>/vertex-ci-images
   - IMAGE_TAG      : 예) a1b2c3d (git short SHA) / latest
 """
 
@@ -19,7 +19,11 @@ from kfp import compiler, dsl
 from kfp.dsl import Dataset, Input, Metrics, Model, Output
 
 
-IMAGE_REGISTRY = os.environ.get("IMAGE_REGISTRY", "gcr.io/REPLACE-WITH-PROJECT")
+# 기본값은 의미 있는 placeholder 일 뿐, CI 에서는 항상 환경변수로 덮어쓴다.
+IMAGE_REGISTRY = os.environ.get(
+    "IMAGE_REGISTRY",
+    "us-central1-docker.pkg.dev/REPLACE-WITH-PROJECT/vertex-ci-images",
+)
 IMAGE_TAG = os.environ.get("IMAGE_TAG", "latest")
 
 
